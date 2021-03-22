@@ -2,9 +2,11 @@
 package main
 
 import (
+    "io"
     "fmt"
     "log"
     "flag"
+    "net/url"
     "net/http"
     "encoding/json"
 )
@@ -19,8 +21,8 @@ type Payload struct {
     Msg string `json:"msg"`
 }
 
-// Generte function to handle HTTP requests and send notifiications
-// to telegram
+// Generate function to extract message from get parameters and send
+// notification
 func generate_notification_processor(token, chatid, code string)  func(w http.ResponseWriter, r *http.Request) {
     return func(w http.ResponseWriter, r *http.Request) {
         query := r.URL.Query()
@@ -38,14 +40,40 @@ func generate_notification_processor(token, chatid, code string)  func(w http.Re
     }
 }
 
-func send_notification(token, chatid, message string) {
-    var url string
-    url = fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=\"%s\"", token, chatid, message)
-    _, err := http.Get(url)
-    if err != nil {
-        fmt.Println(err)
+// Generate function to extract message from request body and send it as notification
+func generate_body_processor(token, chatid string)  func(w http.ResponseWriter, r *http.Request) {
+    return func(w http.ResponseWriter, r *http.Request) {
+	    limited_body := io.LimitReader(r.Body, 1000)
+        msg, err := io.ReadAll(limited_body)
+        if err != nil {
+            log.Printf("Error reading body: %v", err)
+            http.Error(w, "can't read body", http.StatusBadRequest)
+            return
+        }
+	    fmt.Printf("%s", msg)
+        send_notification(token, chatid, fmt.Sprintf("%s", msg))
+        response := Response{
+            Status: "ok",
+        }
+        json.NewEncoder(w).Encode(response)
     }
-    // return resp, err
+}
+
+func send_notification(token, chatid, message string) {
+    req, err := url.Parse(fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    q := url.Values{}
+    q.Add("chat_id", chatid)
+    q.Add("text", message)
+    req.RawQuery = q.Encode()
+    _, errr := http.Get(req.String())
+    if errr != nil {
+        log.Printf("Error sending notification: %v", errr)
+    }
+    fmt.Printf("%s", message)
 }
 
 func main() {
@@ -66,6 +94,7 @@ func main() {
         log.Fatal("chatid should be defined")
     }
     http.HandleFunc("/", generate_notification_processor(token, chatid, code))
+    http.HandleFunc(fmt.Sprintf("/%s/", code), generate_body_processor(token, chatid))
     send_notification(token, chatid, "listening")
     http.ListenAndServe(bind, nil)
 }
